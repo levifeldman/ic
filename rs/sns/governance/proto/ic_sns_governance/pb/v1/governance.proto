@@ -213,8 +213,8 @@ message Neuron {
   repeated DisburseMaturityInProgress disburse_maturity_in_progress = 18;
 
   // The keys are the reward-event-timestamps (end_timestamp_seconds) and the values are the neuron_reward_e8s for this reward-event.   
-  // Stores minimum 5 latest reward events.
-  map<uint64, uint64> reward_events_to_neuron_reward_e8s = 19;
+  // Stores at most MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON latest reward events.
+  map<uint64, uint64> reward_event_end_timestamp_seconds_to_neuron_reward_e8s = 19;
 
 }
 
