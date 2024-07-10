@@ -11,7 +11,7 @@ use crate::{
     logs::{ERROR, INFO},
     neuron::{
         NeuronState, RemovePermissionsStatus, DEFAULT_VOTING_POWER_PERCENTAGE_MULTIPLIER,
-        MAX_LIST_NEURONS_RESULTS, MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON
+        MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON, MAX_LIST_NEURONS_RESULTS,
     },
     pb::{
         sns_root_types::{
@@ -4938,9 +4938,10 @@ impl Governance {
                 } else {
                     neuron.maturity_e8s_equivalent += neuron_reward_e8s;
                 }
-                // Insert the neuron_reward_e8s into the reward_event_end_timestamp_seconds_to_neuron_reward_e8s map on the neuron. 
+                // Insert the neuron_reward_e8s into the reward_event_end_timestamp_seconds_to_neuron_reward_e8s map on the neuron.
                 let map = &mut neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s;
-                const MAX_KEYS: usize = MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
+                const MAX_KEYS: usize =
+                    MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
                 if map.len() > MAX_KEYS {
                     log!(
                         ERROR,
@@ -4954,10 +4955,7 @@ impl Governance {
                     // Prune the earliest reward event.
                     map.pop_first();
                 }
-                map.insert( 
-                    reward_event_end_timestamp_seconds, 
-                    neuron_reward_e8s
-                );
+                map.insert(reward_event_end_timestamp_seconds, neuron_reward_e8s);
                 distributed_e8s_equivalent += neuron_reward_e8s;
             }
         }
@@ -5665,7 +5663,7 @@ mod tests {
             CanisterId::from_u64(42)
         }
     }
-    
+
     // The main feature this implements is control of perceived time.
     struct DummyEnvironmentForDistributeRewardsTests {
         now: Arc<Mutex<u64>>,
@@ -5752,14 +5750,14 @@ mod tests {
     lazy_static! {
         static ref A_NEURON_PRINCIPAL_ID: PrincipalId = PrincipalId::new_user_test_id(956560);
         static ref A_NEURON_PRINCIPAL_ID_2: PrincipalId = PrincipalId::new_user_test_id(956561);
-        
+
         static ref A_NEURON_ID: NeuronId = NeuronId::from(
             compute_neuron_staking_subaccount_bytes(*A_NEURON_PRINCIPAL_ID, /* nonce = */ 0),
         );
         static ref A_NEURON_ID_2: NeuronId = NeuronId::from(
             compute_neuron_staking_subaccount_bytes(*A_NEURON_PRINCIPAL_ID_2, /* nonce = */ 0),
         );
-        
+
         static ref A_NEURON: Neuron = Neuron {
             id: Some(A_NEURON_ID.clone()),
             permissions: vec![NeuronPermission {
@@ -5784,7 +5782,7 @@ mod tests {
             voting_power_percentage_multiplier: 100,
             ..Default::default()
         };
-        
+
         static ref A_MOTION_PROPOSAL: Proposal = Proposal {
             title: "This Proposal is Wunderbar!".to_string(),
             summary: "This will solve all of your problems.".to_string(),
@@ -6546,7 +6544,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_new_reward_event_when_there_are_no_new_proposals() {
-        
         // Step 1: Prepare the world.
 
         // Step 1.1: Helper.
@@ -6703,10 +6700,9 @@ mod tests {
             neuron,
         );
     }
-    
+
     #[tokio::test]
     async fn neuron_reward_event_end_timestamp_seconds_to_neuron_reward_e8s_map() {
-
         let now = Arc::new(Mutex::new(START_OF_2022_TIMESTAMP_SECONDS));
 
         let mut governance_proto = GovernanceProto {
@@ -6736,7 +6732,7 @@ mod tests {
             Box::new(DoNothingLedger {}),
             Box::new(FakeCmc::new()),
         );
-        
+
         use std::ops::Deref;
         for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
             let neuron = governance
@@ -6745,25 +6741,27 @@ mod tests {
                 .get(&neuron_id.to_string())
                 .unwrap();
             assert_eq!(
-                neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s.len(), 
+                neuron
+                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                    .len(),
                 0,
             );
         }
-        
+
         // Make two proposals one from each neuron.
-        // We want both neurons to be equally eligible for the next reward event. 
+        // We want both neurons to be equally eligible for the next reward event.
         // Making a proposal automatically casts a vote from the proposer.
-        
+
         let proposal_id_1 = governance
             .make_proposal(&A_NEURON_ID, &A_NEURON_PRINCIPAL_ID, &A_MOTION_PROPOSAL)
             .await
             .unwrap();
-        
+
         let proposal_id_2 = governance
             .make_proposal(&A_NEURON_ID_2, &A_NEURON_PRINCIPAL_ID_2, &A_MOTION_PROPOSAL)
             .await
-            .unwrap();        
-        
+            .unwrap();
+
         // Assert pre-condition.
         assert_eq!(
             governance
@@ -6772,7 +6770,7 @@ mod tests {
             vec![]
         );
 
-        // Run distribute_rewards, which usually updates the map if there are rewards given, 
+        // Run distribute_rewards, which usually updates the map if there are rewards given,
         // but not this time, because there are no proposals that are ready to settle yet.
         let supply = Tokens::from_e8s(100 * E8);
         governance.distribute_rewards(supply);
@@ -6784,18 +6782,20 @@ mod tests {
                 .get(&neuron_id.to_string())
                 .unwrap();
             assert_eq!(
-                neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s.len(), 
+                neuron
+                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                    .len(),
                 0,
             );
         }
-        
+
         // Now do it when there is a reward event.
-        
+
         // Advance time so that the proposals we made earlier become ready to settle.
         let wait_days = 9;
         *now.lock().unwrap() += ONE_DAY_SECONDS * wait_days;
-        
-        // Make sure distribute_rewards will do a reward_event. 
+
+        // Make sure distribute_rewards will do a reward_event.
         assert_eq!(
             governance
                 .ready_to_be_settled_proposal_ids()
@@ -6815,7 +6815,7 @@ mod tests {
             latest_reward_event.rounds_since_last_distribution,
             Some(wait_days)
         );
-        
+
         // Now check that the reward event and neuron_reward_e8s is saved in the neurons' maps.
         for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
             let neuron = governance
@@ -6824,13 +6824,18 @@ mod tests {
                 .get(&neuron_id.to_string())
                 .unwrap();
             assert_eq!(
-                neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s.len(), 
+                neuron
+                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                    .len(),
                 1,
             );
             assert_eq!(
-                neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s.first_key_value().unwrap(),
+                neuron
+                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                    .first_key_value()
+                    .unwrap(),
                 (
-                    &latest_reward_event.end_timestamp_seconds.unwrap(), 
+                    &latest_reward_event.end_timestamp_seconds.unwrap(),
                     &(latest_reward_event.distributed_e8s_equivalent / 2) // because there are two neurons that split the total rewards.
                 )
             );
