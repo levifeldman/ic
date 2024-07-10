@@ -6748,109 +6748,140 @@ mod tests {
             );
         }
 
-        // Make two proposals one from each neuron.
-        // We want both neurons to be equally eligible for the next reward event.
-        // Making a proposal automatically casts a vote from the proposer.
+        // Save the first reward event timestamp once it happens to test that it gets pruned in the map once we hit the MAX_KEYS limit.
+        let mut first_reward_event_end_timestamp_seconds: Option<u64> = None;
+        
+        // Loop more times than the MAX_KEYS so we can test if the map gets pruned at MAX_KEYS.
+        const MAX_KEYS: usize = MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
+        for i in 0..(MAX_KEYS + 1) {
+        
+            // Make two proposals one from each neuron.
+            // We want both neurons to be equally eligible for the next reward event.
+            // Making a proposal automatically casts a vote from the proposer.
 
-        let proposal_id_1 = governance
-            .make_proposal(&A_NEURON_ID, &A_NEURON_PRINCIPAL_ID, &A_MOTION_PROPOSAL)
-            .await
-            .unwrap();
-
-        let proposal_id_2 = governance
-            .make_proposal(&A_NEURON_ID_2, &A_NEURON_PRINCIPAL_ID_2, &A_MOTION_PROPOSAL)
-            .await
-            .unwrap();
-
-        // Assert pre-condition.
-        assert_eq!(
-            governance
-                .ready_to_be_settled_proposal_ids()
-                .collect::<Vec<_>>(),
-            vec![]
-        );
-
-        // Run distribute_rewards, which usually updates the map if there are rewards given,
-        // but not this time, because there are no proposals that are ready to settle yet.
-        let supply = Tokens::from_e8s(100 * E8);
-        governance.distribute_rewards(supply);
-
-        for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
-            let neuron = governance
-                .proto
-                .neurons
-                .get(&neuron_id.to_string())
+            let proposal_id_1 = governance
+                .make_proposal(&A_NEURON_ID, &A_NEURON_PRINCIPAL_ID, &A_MOTION_PROPOSAL)
+                .await
                 .unwrap();
+
+            let proposal_id_2 = governance
+                .make_proposal(&A_NEURON_ID_2, &A_NEURON_PRINCIPAL_ID_2, &A_MOTION_PROPOSAL)
+                .await
+                .unwrap();
+
+            // The proposals we just made are not yet ready to settle.
             assert_eq!(
-                neuron
-                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
-                    .len(),
-                0,
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![]
+            );
+
+            // Run distribute_rewards, which usually updates the map if there are rewards given,
+            // but not this time, because there are no proposals that are ready to settle yet.
+            let supply = Tokens::from_e8s(100 * E8);
+            governance.distribute_rewards(supply);
+
+            for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
+                let neuron = governance
+                    .proto
+                    .neurons
+                    .get(&neuron_id.to_string())
+                    .unwrap();
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .len(),
+                    std::cmp::min(i, MAX_KEYS),
+                );
+            }
+
+            // Now do it when there is a reward event.
+
+            // Advance time so that the proposals we made earlier become ready to settle.
+            let wait_days = 9;
+            *now.lock().unwrap() += ONE_DAY_SECONDS * wait_days;
+
+            // Make sure distribute_rewards will do a reward_event.
+            assert_eq!(
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![proposal_id_1, proposal_id_2]
+            );
+
+            // Run distribute_rewards a second time.
+            governance.distribute_rewards(supply);
+
+            let latest_reward_event = governance.proto.latest_reward_event.as_ref().unwrap();
+            assert_eq!(
+                latest_reward_event.settled_proposals,
+                vec![proposal_id_1, proposal_id_2]
+            );
+            assert_eq!(
+                latest_reward_event.rounds_since_last_distribution,
+                Some(wait_days)
+            );
+            
+            // Save the first reward event timestamp to test that it gets pruned in the map once we hit the MAX_KEYS limit.
+            if first_reward_event_end_timestamp_seconds.is_none() {
+                first_reward_event_end_timestamp_seconds = Some(latest_reward_event.end_timestamp_seconds.unwrap());
+            }
+
+            // Now check that the reward event and neuron_reward_e8s is saved in the neurons' maps.
+            for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
+                let neuron = governance
+                    .proto
+                    .neurons
+                    .get(&neuron_id.to_string())
+                    .unwrap();
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .len(),
+                    std::cmp::min(i+1, MAX_KEYS),
+                );
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .last_key_value()
+                        .unwrap(),
+                    (
+                        &latest_reward_event.end_timestamp_seconds.unwrap(),
+                        &(latest_reward_event.distributed_e8s_equivalent / 2) // because there are two neurons that split the total rewards.
+                    )
+                );
+                assert_eq!(
+                    neuron.maturity_e8s_equivalent,
+                    (latest_reward_event.distributed_e8s_equivalent / 2) + (i as u64 * (latest_reward_event.distributed_e8s_equivalent / 2))
+                );
+                
+                if i < MAX_KEYS {
+                    // Test that the earliest reward event did not get pruned yet.
+                    assert!(
+                        neuron
+                            .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                            .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                            .is_some()
+                    );
+                } else {
+                    // Test that the earliest reward event got pruned.
+                    assert!(
+                        neuron
+                            .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                            .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                            .is_none()
+                    );
+                }
+            }
+
+            assert_eq!(
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![]
             );
         }
-
-        // Now do it when there is a reward event.
-
-        // Advance time so that the proposals we made earlier become ready to settle.
-        let wait_days = 9;
-        *now.lock().unwrap() += ONE_DAY_SECONDS * wait_days;
-
-        // Make sure distribute_rewards will do a reward_event.
-        assert_eq!(
-            governance
-                .ready_to_be_settled_proposal_ids()
-                .collect::<Vec<_>>(),
-            vec![proposal_id_1, proposal_id_2]
-        );
-
-        // Run distribute_rewards a second time.
-        governance.distribute_rewards(supply);
-
-        let latest_reward_event = governance.proto.latest_reward_event.as_ref().unwrap();
-        assert_eq!(
-            latest_reward_event.settled_proposals,
-            vec![proposal_id_1, proposal_id_2]
-        );
-        assert_eq!(
-            latest_reward_event.rounds_since_last_distribution,
-            Some(wait_days)
-        );
-
-        // Now check that the reward event and neuron_reward_e8s is saved in the neurons' maps.
-        for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
-            let neuron = governance
-                .proto
-                .neurons
-                .get(&neuron_id.to_string())
-                .unwrap();
-            assert_eq!(
-                neuron
-                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
-                    .len(),
-                1,
-            );
-            assert_eq!(
-                neuron
-                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
-                    .first_key_value()
-                    .unwrap(),
-                (
-                    &latest_reward_event.end_timestamp_seconds.unwrap(),
-                    &(latest_reward_event.distributed_e8s_equivalent / 2) // because there are two neurons that split the total rewards.
-                )
-            );
-            assert_eq!(
-                neuron.maturity_e8s_equivalent,
-                latest_reward_event.distributed_e8s_equivalent / 2
-            );
-        }
-
-        assert_eq!(
-            governance
-                .ready_to_be_settled_proposal_ids()
-                .collect::<Vec<_>>(),
-            vec![]
-        );
     }
 
     #[test]
