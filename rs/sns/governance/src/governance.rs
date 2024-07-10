@@ -6750,11 +6750,10 @@ mod tests {
 
         // Save the first reward event timestamp once it happens to test that it gets pruned in the map once we hit the MAX_KEYS limit.
         let mut first_reward_event_end_timestamp_seconds: Option<u64> = None;
-        
+
         // Loop more times than the MAX_KEYS so we can test if the map gets pruned at MAX_KEYS.
         const MAX_KEYS: usize = MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
         for i in 0..(MAX_KEYS + 1) {
-        
             // Make two proposals one from each neuron.
             // We want both neurons to be equally eligible for the next reward event.
             // Making a proposal automatically casts a vote from the proposer.
@@ -6822,10 +6821,11 @@ mod tests {
                 latest_reward_event.rounds_since_last_distribution,
                 Some(wait_days)
             );
-            
+
             // Save the first reward event timestamp to test that it gets pruned in the map once we hit the MAX_KEYS limit.
             if first_reward_event_end_timestamp_seconds.is_none() {
-                first_reward_event_end_timestamp_seconds = Some(latest_reward_event.end_timestamp_seconds.unwrap());
+                first_reward_event_end_timestamp_seconds =
+                    Some(latest_reward_event.end_timestamp_seconds.unwrap());
             }
 
             // Now check that the reward event and neuron_reward_e8s is saved in the neurons' maps.
@@ -6839,7 +6839,7 @@ mod tests {
                     neuron
                         .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
                         .len(),
-                    std::cmp::min(i+1, MAX_KEYS),
+                    std::cmp::min(i + 1, MAX_KEYS),
                 );
                 assert_eq!(
                     neuron
@@ -6853,25 +6853,22 @@ mod tests {
                 );
                 assert_eq!(
                     neuron.maturity_e8s_equivalent,
-                    (latest_reward_event.distributed_e8s_equivalent / 2) + (i as u64 * (latest_reward_event.distributed_e8s_equivalent / 2))
+                    (latest_reward_event.distributed_e8s_equivalent / 2)
+                        + (i as u64 * (latest_reward_event.distributed_e8s_equivalent / 2))
                 );
-                
+
                 if i < MAX_KEYS {
                     // Test that the earliest reward event did not get pruned yet.
-                    assert!(
-                        neuron
-                            .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
-                            .get(&first_reward_event_end_timestamp_seconds.unwrap())
-                            .is_some()
-                    );
+                    assert!(neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                        .is_some());
                 } else {
                     // Test that the earliest reward event got pruned.
-                    assert!(
-                        neuron
-                            .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
-                            .get(&first_reward_event_end_timestamp_seconds.unwrap())
-                            .is_none()
-                    );
+                    assert!(neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                        .is_none());
                 }
             }
 
