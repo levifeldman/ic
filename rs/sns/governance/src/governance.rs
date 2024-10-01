@@ -6,7 +6,7 @@ use crate::{
     logs::{ERROR, INFO},
     neuron::{
         NeuronState, RemovePermissionsStatus, DEFAULT_VOTING_POWER_PERCENTAGE_MULTIPLIER,
-        MAX_LIST_NEURONS_RESULTS,
+        MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON, MAX_LIST_NEURONS_RESULTS,
     },
     pb::{
         sns_root_types::{
@@ -1334,6 +1334,7 @@ impl Governance {
             auto_stake_maturity: parent_neuron.auto_stake_maturity,
             vesting_period_seconds: None,
             disburse_maturity_in_progress: vec![],
+            reward_event_end_timestamp_seconds_to_neuron_reward_e8s: BTreeMap::new(),
         };
 
         // Add the child neuron's id to the set of neurons with ongoing operations.
@@ -3787,6 +3788,7 @@ impl Governance {
             auto_stake_maturity: None,
             vesting_period_seconds: None,
             disburse_maturity_in_progress: vec![],
+            reward_event_end_timestamp_seconds_to_neuron_reward_e8s: BTreeMap::new(),
         };
 
         // This also verifies that there are not too many neurons already.
@@ -3953,6 +3955,7 @@ impl Governance {
                 auto_stake_maturity: neuron_recipe.construct_auto_staking_maturity(),
                 vesting_period_seconds: None,
                 disburse_maturity_in_progress: vec![],
+                reward_event_end_timestamp_seconds_to_neuron_reward_e8s: BTreeMap::new(),
             };
 
             // Add the neuron to the various data structures and indexes to support neurons. This
@@ -4968,6 +4971,24 @@ impl Governance {
                 } else {
                     neuron.maturity_e8s_equivalent += neuron_reward_e8s;
                 }
+                // Insert the neuron_reward_e8s into the reward_event_end_timestamp_seconds_to_neuron_reward_e8s map on the neuron.
+                let map = &mut neuron.reward_event_end_timestamp_seconds_to_neuron_reward_e8s;
+                const MAX_KEYS: usize =
+                    MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
+                if map.len() > MAX_KEYS {
+                    log!(
+                        ERROR,
+                        "Invariant violated: reward_event_end_timestamp_seconds_to_neuron_reward_e8s.len() ({}) has more than ({}) \
+                        events for neuron {:?}. Only the maximum number of keys will be retained.",
+                        map.len(), MAX_KEYS, neuron.id,
+                    );
+                }
+                // Remove enough elements to satisfy the limit after adding the current event.
+                while map.len() + 1 > MAX_KEYS {
+                    // Prune the earliest reward event.
+                    map.pop_first();
+                }
+                map.insert(reward_event_end_timestamp_seconds, neuron_reward_e8s);
                 distributed_e8s_equivalent += neuron_reward_e8s;
             }
         }
@@ -5679,6 +5700,59 @@ mod tests {
         }
     }
 
+    // The main feature this implements is control of perceived time.
+    struct DummyEnvironmentForDistributeRewardsTests {
+        now: Arc<Mutex<u64>>,
+    }
+
+    impl DummyEnvironmentForDistributeRewardsTests {
+        fn new(now: Arc<Mutex<u64>>) -> Self {
+            Self { now }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for DummyEnvironmentForDistributeRewardsTests {
+        fn now(&self) -> u64 {
+            *self.now.lock().unwrap()
+        }
+
+        fn set_time_warp(&mut self, _new_time_warp: TimeWarp) {
+            unimplemented!();
+        }
+
+        fn insecure_random_u64(&mut self) -> u64 {
+            unimplemented!();
+        }
+
+        async fn call_canister(
+            &self,
+            _canister_id: CanisterId,
+            _method_name: &str,
+            _arg: Vec<u8>,
+        ) -> Result<
+            /* reply: */ Vec<u8>,
+            (
+                /* error_code: */ Option<i32>,
+                /* message: */ String,
+            ),
+        > {
+            unimplemented!();
+        }
+
+        fn heap_growth_potential(&self) -> HeapGrowthPotential {
+            HeapGrowthPotential::NoIssue
+        }
+
+        fn canister_id(&self) -> CanisterId {
+            CanisterId::from_u64(318680)
+        }
+
+        fn canister_version(&self) -> Option<u64> {
+            None
+        }
+    }
+
     fn basic_governance_proto() -> GovernanceProto {
         GovernanceProto {
             root_canister_id: Some(PrincipalId::new_user_test_id(53)),
@@ -5707,15 +5781,31 @@ mod tests {
 
     lazy_static! {
         static ref A_NEURON_PRINCIPAL_ID: PrincipalId = PrincipalId::new_user_test_id(956560);
+        static ref A_NEURON_PRINCIPAL_ID_2: PrincipalId = PrincipalId::new_user_test_id(956561);
 
         static ref A_NEURON_ID: NeuronId = NeuronId::from(
             compute_neuron_staking_subaccount_bytes(*A_NEURON_PRINCIPAL_ID, /* nonce = */ 0),
+        );
+        static ref A_NEURON_ID_2: NeuronId = NeuronId::from(
+            compute_neuron_staking_subaccount_bytes(*A_NEURON_PRINCIPAL_ID_2, /* nonce = */ 0),
         );
 
         static ref A_NEURON: Neuron = Neuron {
             id: Some(A_NEURON_ID.clone()),
             permissions: vec![NeuronPermission {
                 principal: Some(*A_NEURON_PRINCIPAL_ID),
+                permission_type: NeuronPermissionType::all(),
+            }],
+            cached_neuron_stake_e8s: 100 * E8,
+            aging_since_timestamp_seconds: START_OF_2022_TIMESTAMP_SECONDS,
+            dissolve_state: Some(DissolveState::DissolveDelaySeconds(365 * ONE_DAY_SECONDS)),
+            voting_power_percentage_multiplier: 100,
+            ..Default::default()
+        };
+        static ref A_NEURON_2: Neuron = Neuron {
+            id: Some(A_NEURON_ID_2.clone()),
+            permissions: vec![NeuronPermission {
+                principal: Some(*A_NEURON_PRINCIPAL_ID_2),
                 permission_type: NeuronPermissionType::all(),
             }],
             cached_neuron_stake_e8s: 100 * E8,
@@ -6486,61 +6576,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_new_reward_event_when_there_are_no_new_proposals() {
-        // Step 0: Define helper type(s).
-
-        // The main feature this implements is control of perceived time.
-        struct DummyEnvironment {
-            now: Arc<Mutex<u64>>,
-        }
-
-        impl DummyEnvironment {
-            fn new(now: Arc<Mutex<u64>>) -> Self {
-                Self { now }
-            }
-        }
-
-        #[async_trait]
-        impl Environment for DummyEnvironment {
-            fn now(&self) -> u64 {
-                *self.now.lock().unwrap()
-            }
-
-            fn set_time_warp(&mut self, _new_time_warp: TimeWarp) {
-                unimplemented!();
-            }
-
-            fn insecure_random_u64(&mut self) -> u64 {
-                unimplemented!();
-            }
-
-            async fn call_canister(
-                &self,
-                _canister_id: CanisterId,
-                _method_name: &str,
-                _arg: Vec<u8>,
-            ) -> Result<
-                /* reply: */ Vec<u8>,
-                (
-                    /* error_code: */ Option<i32>,
-                    /* message: */ String,
-                ),
-            > {
-                unimplemented!();
-            }
-
-            fn heap_growth_potential(&self) -> HeapGrowthPotential {
-                HeapGrowthPotential::NoIssue
-            }
-
-            fn canister_id(&self) -> CanisterId {
-                CanisterId::from_u64(318680)
-            }
-
-            fn canister_version(&self) -> Option<u64> {
-                None
-            }
-        }
-
         // Step 1: Prepare the world.
 
         // Step 1.1: Helper.
@@ -6569,7 +6604,7 @@ mod tests {
         let min_reward_rate = i2d(1) / i2d(100);
         let mut governance = Governance::new(
             governance_proto.try_into().unwrap(),
-            Box::new(DummyEnvironment::new(now.clone())),
+            Box::new(DummyEnvironmentForDistributeRewardsTests::new(now.clone())),
             Box::new(DoNothingLedger {}),
             Box::new(DoNothingLedger {}),
             Box::new(FakeCmc::new()),
@@ -6697,6 +6732,186 @@ mod tests {
             "neuron = {:#?}",
             neuron,
         );
+    }
+
+    #[tokio::test]
+    async fn neuron_reward_event_end_timestamp_seconds_to_neuron_reward_e8s_map() {
+        let now = Arc::new(Mutex::new(START_OF_2022_TIMESTAMP_SECONDS));
+
+        let mut governance_proto = GovernanceProto {
+            neurons: btreemap! {
+                A_NEURON_ID.to_string() => A_NEURON.clone(),
+                A_NEURON_ID_2.to_string() => A_NEURON_2.clone(),
+            },
+            ..basic_governance_proto()
+        };
+        let voting_rewards_parameters = governance_proto
+            .parameters
+            .as_mut()
+            .unwrap()
+            .voting_rewards_parameters
+            .as_mut()
+            .unwrap();
+        *voting_rewards_parameters = VotingRewardsParameters {
+            round_duration_seconds: Some(ONE_DAY_SECONDS),
+            reward_rate_transition_duration_seconds: Some(0),
+            initial_reward_rate_basis_points: Some(100),
+            final_reward_rate_basis_points: Some(100),
+        };
+        let mut governance = Governance::new(
+            governance_proto.try_into().unwrap(),
+            Box::new(DummyEnvironmentForDistributeRewardsTests::new(now.clone())),
+            Box::new(DoNothingLedger {}),
+            Box::new(DoNothingLedger {}),
+            Box::new(FakeCmc::new()),
+        );
+
+        use std::ops::Deref;
+        for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
+            let neuron = governance
+                .proto
+                .neurons
+                .get(&neuron_id.to_string())
+                .unwrap();
+            assert_eq!(
+                neuron
+                    .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                    .len(),
+                0,
+            );
+        }
+
+        // Save the first reward event timestamp once it happens to test that it gets pruned in the map once we hit the MAX_KEYS limit.
+        let mut first_reward_event_end_timestamp_seconds: Option<u64> = None;
+
+        // Loop more times than the MAX_KEYS so we can test if the map gets pruned at MAX_KEYS.
+        const MAX_KEYS: usize = MAX_KEEP_REWARD_EVENTS_TO_NEURON_REWARD_E8S_PER_NEURON as usize;
+        for i in 0..(MAX_KEYS + 1) {
+            // Make two proposals one from each neuron.
+            // We want both neurons to be equally eligible for the next reward event.
+            // Making a proposal automatically casts a vote from the proposer.
+
+            let proposal_id_1 = governance
+                .make_proposal(&A_NEURON_ID, &A_NEURON_PRINCIPAL_ID, &A_MOTION_PROPOSAL)
+                .await
+                .unwrap();
+
+            let proposal_id_2 = governance
+                .make_proposal(&A_NEURON_ID_2, &A_NEURON_PRINCIPAL_ID_2, &A_MOTION_PROPOSAL)
+                .await
+                .unwrap();
+
+            // The proposals we just made are not yet ready to settle.
+            assert_eq!(
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![]
+            );
+
+            // Run distribute_rewards, which usually updates the map if there are rewards given,
+            // but not this time, because there are no proposals that are ready to settle yet.
+            let supply = Tokens::from_e8s(100 * E8);
+            governance.distribute_rewards(supply);
+
+            for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
+                let neuron = governance
+                    .proto
+                    .neurons
+                    .get(&neuron_id.to_string())
+                    .unwrap();
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .len(),
+                    std::cmp::min(i, MAX_KEYS),
+                );
+            }
+
+            // Now do it when there is a reward event.
+
+            // Advance time so that the proposals we made earlier become ready to settle.
+            let wait_days = 9;
+            *now.lock().unwrap() += ONE_DAY_SECONDS * wait_days;
+
+            // Make sure distribute_rewards will do a reward_event.
+            assert_eq!(
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![proposal_id_1, proposal_id_2]
+            );
+
+            // Run distribute_rewards a second time.
+            governance.distribute_rewards(supply);
+
+            let latest_reward_event = governance.proto.latest_reward_event.as_ref().unwrap();
+            assert_eq!(
+                latest_reward_event.settled_proposals,
+                vec![proposal_id_1, proposal_id_2]
+            );
+            assert_eq!(
+                latest_reward_event.rounds_since_last_distribution,
+                Some(wait_days)
+            );
+
+            // Save the first reward event timestamp to test that it gets pruned in the map once we hit the MAX_KEYS limit.
+            if first_reward_event_end_timestamp_seconds.is_none() {
+                first_reward_event_end_timestamp_seconds =
+                    Some(latest_reward_event.end_timestamp_seconds.unwrap());
+            }
+
+            // Now check that the reward event and neuron_reward_e8s is saved in the neurons' maps.
+            for neuron_id in [A_NEURON_ID.deref(), A_NEURON_ID_2.deref()] {
+                let neuron = governance
+                    .proto
+                    .neurons
+                    .get(&neuron_id.to_string())
+                    .unwrap();
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .len(),
+                    std::cmp::min(i + 1, MAX_KEYS),
+                );
+                assert_eq!(
+                    neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .last_key_value()
+                        .unwrap(),
+                    (
+                        &latest_reward_event.end_timestamp_seconds.unwrap(),
+                        &(latest_reward_event.distributed_e8s_equivalent / 2) // because there are two neurons that split the total rewards.
+                    )
+                );
+                assert_eq!(
+                    neuron.maturity_e8s_equivalent,
+                    (latest_reward_event.distributed_e8s_equivalent / 2)
+                        + (i as u64 * (latest_reward_event.distributed_e8s_equivalent / 2))
+                );
+
+                if i < MAX_KEYS {
+                    // Test that the earliest reward event did not get pruned yet.
+                    assert!(neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                        .is_some());
+                } else {
+                    // Test that the earliest reward event got pruned.
+                    assert!(neuron
+                        .reward_event_end_timestamp_seconds_to_neuron_reward_e8s
+                        .get(&first_reward_event_end_timestamp_seconds.unwrap())
+                        .is_none());
+                }
+            }
+
+            assert_eq!(
+                governance
+                    .ready_to_be_settled_proposal_ids()
+                    .collect::<Vec<_>>(),
+                vec![]
+            );
+        }
     }
 
     #[test]
